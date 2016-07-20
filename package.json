@@ -1,0 +1,21 @@
+{
+  "name": "@tradle/push-server",
+  "version": "1.0.0",
+  "description": "tradle proxy server for push notifications",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Mark Vayngrib <mark@tradle.io> (http://github.com/mvayngrib)",
+  "license": "MIT",
+  "dependencies": {
+    "@tradle/engine": "^2.1.0",
+    "body-parser": "^1.15.2",
+    "express": "^4.14.0",
+    "level": "^1.4.0",
+    "nkey-ec": "^1.0.0",
+    "run-parallel": "^1.1.6",
+    "subleveldown": "^2.1.0",
+    "superagent": "^2.1.0"
+  }
+}
