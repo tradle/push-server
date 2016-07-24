@@ -6,6 +6,7 @@ const request = require('superagent')
 const level = require('level')
 const subdown = require('subleveldown')
 const parallel = require('run-parallel')
+const debug = require('debug')('tradle:push-server')
 const nkeyEC = require('nkey-ec')
 const tradle = require('@tradle/engine')
 const createValidator = tradle.validator
@@ -18,37 +19,33 @@ const PROTOCOLS = ['apns', 'gcm']
 
 module.exports = function (opts) {
   const app = express()
-  const db = level(opts.db)
-  const subscribers = subdown(db, 'subscribers')
-  const unconfirmedPublishers = subdown(db, 'waitingRoom')
-  const publishers = subdown(db, 'publishers')
+  const dbOpts = { valueEncoding: 'json' }
+  const db = level(opts.db, dbOpts)
+  const subscribers = subdown(db, 'subscribers', dbOpts)
+  const unconfirmedPublishers = subdown(db, 'waitingRoom', dbOpts)
+  const publishers = subdown(db, 'publishers', dbOpts)
   const pushdBaseUrl = opts.pushd || DEFAULT_PUSHD_URL
   const server = app.listen(opts.port)
   const defaultLang = opts.lang || DEFAULT_LANG
   const validator = createValidator()
 
-  app.post('/register', jsonParser, function register (req, res) {
+  app.post('/subscriber', jsonParser, function register (req, res) {
     const body = req.body
     const identity = body.identity
     try {
-      validator.checkAuthentic({
-        object: body.identity
-      })
+      validate(identity, identity)
     } catch (err) {
       return res.status(400).send('invalid identity')
     }
 
     try {
-      validator.checkAuthentic({
-        object: body
-      })
+      validate(body, identity)
     } catch (err) {
       return res.status(400).send('invalid request')
     }
 
     const proto = body.protocol
     // TODO: verify
-    const identity = body.identity
     if (PROTOCOLS.indexOf(proto) === -1) {
       return res.status(400).send(`unsupported protocol: ${proto}`)
     }
@@ -75,9 +72,8 @@ module.exports = function (opts) {
           return res.status(400).send('Invalid token or protocol')
         }
 
-        res.status(200).end()
         if (pushdRes.status === 200) {
-          return pushdRes.status(200).end()
+          return res.status(200).end()
         }
 
         const body = pushdRes.body
@@ -93,27 +89,32 @@ module.exports = function (opts) {
         // }
 
         const id = body.id
-        subscribers.put(link, id, function (err) {
+        subscribers.put(link, {
+          id: id,
+          identity: identity
+        }, function (err) {
           if (err) return oops(err, res)
 
+          debug('registered: ' + link)
           res.status(200).end()
         })
       })
   })
 
-  app.post('/susbcriber/:subscriber/:publisher', jsonParser, function (req, res) {
-    // const body = req.body
-    const publisher = req.params.publisher
-    const subscriber = req.params.subscriber
-    // if (!body.event) {
-    //   return res.status(400).send('expected "event"')
-    // }
-
-    // TODO: verify sig for subscription request
-
-    subscribers.get(subscriber, function (err, id) {
+  app.post('/subscription', jsonParser, function (req, res) {
+    const body = req.body
+    const publisher = body.publisher
+    const subscriber = body.subscriber
+    subscribers.get(subscriber, function (err, info) {
       if (err) return res.status(404).end()
 
+      try {
+        validate(body, info.identity)
+      } catch (err) {
+        return res.status(401).send('invalid signature')
+      }
+
+      const id = info.id
       const event = privateEventName(id, publisher)
       request.post(`${pushdBaseUrl}/subscriber/${id}/subscriptions/${event}`)
         .end(function (err, subscribeRes) {
@@ -138,30 +139,60 @@ module.exports = function (opts) {
    *   }
    * }
    */
-  app.post('/event/:subscriber/:publisher', jsonParser, authenticate, function (req, res) {
-    const body = req.body
+  // app.post('/event/:subscriber/:publisher', jsonParser, authenticate, function (req, res) {
+  //   const body = req.body
+  //   const subscriber = req.params.subscriber
+  //   const publisher = req.params.publisher
+  //   // TODO: authentication
+
+  //   // if (!body.event) {
+  //   //   return res.status(400).send('expected "event"')
+  //   // }
+
+  //   // TODO:
+  //   //   validate eventBody
+  //   //   set size limit on eventBody
+  //   parallel([
+  //     taskCB => subscribers.get(subscriber, taskCB),
+  //     taskCB => publishers.get(publisher, taskCB)
+  //   ], function (err, results) {
+  //     if (err) return res.status(404).end()
+
+  //     const id = results[0]
+  //     const event = privateEventName(id, publisher)
+  //     request.post(`${pushdBaseUrl}/event/${event}`)
+  //       .type('form') // send url-encoded
+  //       .send(req.body)
+  //       .end(function (err, subscribeRes) {
+  //         if (err) return oops(err, res)
+
+  //         res.status(200).end()
+  //       })
+  //   })
+  // })
+
+  app.post('/notification/:subscriber/:publisher', authenticate, function (req, res) {
     const subscriber = req.params.subscriber
     const publisher = req.params.publisher
-    // TODO: authentication
-
-    // if (!body.event) {
-    //   return res.status(400).send('expected "event"')
-    // }
-
-    // TODO:
-    //   validate eventBody
-    //   set size limit on eventBody
     parallel([
       taskCB => subscribers.get(subscriber, taskCB),
       taskCB => publishers.get(publisher, taskCB)
     ], function (err, results) {
+      // 404 leaks some information
+      // maybe this call should always return 200
       if (err) return res.status(404).end()
 
-      const id = results[0]
+      const id = results[0].id
       const event = privateEventName(id, publisher)
+      // const body = req.body
+      // body.contentAvailable = true
       request.post(`${pushdBaseUrl}/event/${event}`)
         .type('form') // send url-encoded
-        .send(req.body)
+        .send({
+          contentAvailable: true,
+          sound: '',
+          msg: ''
+        })
         .end(function (err, subscribeRes) {
           if (err) return oops(err, res)
 
@@ -170,41 +201,19 @@ module.exports = function (opts) {
     })
   })
 
-  app.post('/silent/:subscriber/:publisher', authenticate, function (req, res) {
-    const subscriber = req.params.subscriber
-    const publisher = req.params.publisher
-    parallel([
-      taskCB => subscribers.get(subscriber, taskCB),
-      taskCB => publishers.get(publisher, taskCB)
-    ], function (err, results) {
-      if (err) return res.status(404).end()
-
-      const id = results[0]
-      const event = privateEventName(id, publisher)
-      request.post(`${pushdBaseUrl}/event/${event}`)
-        .type('form') // send url-encoded
-        .send({ contentAvailable: true })
-        .end(function (err, subscribeRes) {
-          if (err) return oops(err, res)
-
-          res.status(200).end()
-        })
-    })
+  app.post('/publisher', jsonParser, function (req, res) {
+    if (req.body.key) return registerPublisher(req, res)
+    else return confirmPublisher(req, res)
   })
 
-  app.post('/registerprovider', jsonParser, function registerProvider (req, res) {
+  function registerPublisher (req, res) {
     const body = req.body
     const identity = body.identity
     // TODO: validate link
     const key = body.key
     const nonce = crypto.randomBytes(32).toString('base64')
     try {
-      validator.checkAuthentic({
-        object: identity,
-        author: {
-          object: identity
-        }
-      })
+      validate(identity, identity)
     } catch (err) {
       return res.status(400).send('invalid identity')
     }
@@ -218,14 +227,14 @@ module.exports = function (opts) {
       }
     }
 
-    unconfirmedPublishers.put(nonce, JSON.stringify(regInfo), function (err) {
+    unconfirmedPublishers.put(nonce, regInfo, function (err) {
       if (err) return oops(err, res)
 
       res.status(200).send(nonce)
     })
-  })
+  }
 
-  app.post('/confirmprovider', jsonParser, function confirmProvider (req, res) {
+  function confirmPublisher (req, res) {
     const body = req.body
     // TODO: validate sig
     const nonce = body.nonce
@@ -238,24 +247,23 @@ module.exports = function (opts) {
     unconfirmedPublishers.get(nonce, function (err, regInfo) {
       if (err) return res.status(404).end()
 
-      regInfo = JSON.parse(regInfo)
       const key = nkeyEC.fromJSON(regInfo.key)
       key.verify(sha256(nonce + salt), sig, function (err, verified) {
         if (err) return oops(err, res)
         if (!verified) return res.status(401).send('invalid signature')
 
-        publishers.put(regInfo.link, '0', function (err) {
+        publishers.put(regInfo.link, {}, function (err) {
           if (err) return oops(err, res)
 
           unconfirmedPublishers.del(nonce, function (err) {
-            if (err) console.error(err)
+            if (err) return debug('failed to confirm publisher', err)
           })
 
           res.status(200).end()
         })
       })
     })
-  })
+  }
 
   app.use(defaultErrHandler)
 
@@ -273,6 +281,13 @@ module.exports = function (opts) {
 
   function defaultErrHandler (err, req, res, next) {
     oops(err, res)
+  }
+
+  function validate (object, authorIdentity) {
+    validator.checkAuthentic({
+      object,
+      author: { object: authorIdentity }
+    })
   }
 }
 
