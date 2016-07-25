@@ -11,21 +11,24 @@ const nkeyEC = require('nkey-ec')
 const tradle = require('@tradle/engine')
 const createValidator = tradle.validator
 const protocol = tradle.protocol
+const constants = tradle.constants
+const PERMALINK = constants.PERMALINK
 // const protocol = require('@tradle/protocol')
 const DEFAULT_LANG = 'en'
 const DEFAULT_PUSHD_URL = 'http://127.0.0.1:24432'
 // pushd supports others, but limit for now
 const PROTOCOLS = ['apns', 'gcm']
+const noop = () => {}
 
 module.exports = function (opts) {
-  const app = express()
+  const app = opts.router || express()
   const dbOpts = { valueEncoding: 'json' }
   const db = level(opts.db, dbOpts)
   const subscribers = subdown(db, 'subscribers', dbOpts)
   const unconfirmedPublishers = subdown(db, 'waitingRoom', dbOpts)
   const publishers = subdown(db, 'publishers', dbOpts)
   const pushdBaseUrl = opts.pushd || DEFAULT_PUSHD_URL
-  const server = app.listen(opts.port)
+  const server = opts.router ? null : app.listen(opts.port)
   const defaultLang = opts.lang || DEFAULT_LANG
   const validator = createValidator()
 
@@ -54,7 +57,8 @@ module.exports = function (opts) {
       return res.status(400).send('expected "token"')
     }
 
-    const link = protocol.linkString(identity)
+    const identityInfo = { object: identity }
+    tradle.utils.addLinks(identityInfo)
     request.post(pushdBaseUrl + '/subscribers')
       .type('form') // send url-encoded
       .send({
@@ -89,32 +93,27 @@ module.exports = function (opts) {
         // }
 
         const id = body.id
-        subscribers.put(link, {
+        subscribers.put(identityInfo.permalink, {
           id: id,
+          link: identityInfo.link,
+          permalink: identityInfo.permalink,
           identity: identity
         }, function (err) {
           if (err) return oops(err, res)
 
-          debug('registered: ' + link)
+          debug('registered: ' + identityInfo.link)
           res.status(200).end()
         })
       })
   })
 
-  app.post('/subscription', jsonParser, function (req, res) {
-    const body = req.body
-    const publisher = body.publisher
-    const subscriber = body.subscriber
-    subscribers.get(subscriber, function (err, info) {
-      if (err) return res.status(404).end()
-
-      try {
-        validate(body, info.identity)
-      } catch (err) {
-        return res.status(401).send('invalid signature')
-      }
-
-      const id = info.id
+  // create/delete subscriptions
+  // ;['post', 'delete'].forEach(method => {
+    app.post('/subscription', jsonParser, authenticateSubscriber, function (req, res) {
+      const body = req.body
+      const publisher = body.publisher
+      const subscriber = body.subscriber
+      const id = req.subscriber.id
       const event = privateEventName(id, publisher)
       request.post(`${pushdBaseUrl}/subscriber/${id}/subscriptions/${event}`)
         .end(function (err, subscribeRes) {
@@ -123,6 +122,10 @@ module.exports = function (opts) {
           res.status(200).end()
         })
     })
+  // })
+
+  app.delete('/subscription', authenticateSubscriber, function (req, res) {
+    res.status(405).send('not supported yet')
   })
 
   /**
@@ -171,34 +174,77 @@ module.exports = function (opts) {
   //   })
   // })
 
-  app.post('/notification/:subscriber/:publisher', authenticate, function (req, res) {
-    const subscriber = req.params.subscriber
-    const publisher = req.params.publisher
-    parallel([
-      taskCB => subscribers.get(subscriber, taskCB),
-      taskCB => publishers.get(publisher, taskCB)
-    ], function (err, results) {
+  app.post('/notification', jsonParser, function (req, res) {
+    const body = req.body
+    const sig = body.sig
+    const subscriberLink = body.subscriber
+    const publisherLink = body.publisher
+    const seq = Number(body.seq)
+    const nonce = body.nonce // optional nonce
+    if (isNaN(seq)) {
+      return res.status(400).send('expected number "seq"')
+    }
+
+    parallel({
+      subscriber: taskCB => subscribers.get(subscriberLink, taskCB),
+      publisher: taskCB => publishers.get(publisherLink, taskCB)
+    }, function (err, result) {
       // 404 leaks some information
       // maybe this call should always return 200
       if (err) return res.status(404).end()
 
-      const id = results[0].id
-      const event = privateEventName(id, publisher)
-      // const body = req.body
-      // body.contentAvailable = true
-      request.post(`${pushdBaseUrl}/event/${event}`)
-        .type('form') // send url-encoded
-        .send({
-          contentAvailable: true,
-          sound: '',
-          msg: ''
-        })
-        .end(function (err, subscribeRes) {
-          if (err) return oops(err, res)
+      const publisher = result.publisher
+      const mySubscribers = result.publisher.subscribers
+      if (!mySubscribers[subscriberLink]) {
+        mySubscribers[subscriberLink] = -1
+      }
 
-          res.status(200).end()
-        })
+      if (!(seq >= mySubscribers[subscriberLink])) {
+        return res.status(409).end()
+      }
+
+      const key = nkeyEC.fromJSON(publisher.key)
+      const data = sha256(seq + (nonce || ''))
+      key.verify(data, sig, function (err, verified) {
+        if (err) return oops(err, res)
+        if (!verified) return res.status(401).send('invalid signature')
+
+        const id = result.subscriber.id
+        const event = privateEventName(id, publisherLink)
+        // const body = req.body
+        // body.contentAvailable = true
+        request.post(`${pushdBaseUrl}/event/${event}`)
+          .type('form') // send url-encoded
+          .send({
+            contentAvailable: true,
+            sound: '',
+            msg: ''
+          })
+          .end(function (err, subscribeRes) {
+            if (err) return oops(err, res)
+
+            mySubscribers[subscriberLink]++
+            publishers.put(publisherLink, result.publisher, function (err) {
+              // nothing we can do if there's an error
+              if (err) debug('failed to update publisher counts', err)
+
+              res.status(200).end()
+            })
+          })
+      })
     })
+  })
+
+  app.post('/clearbadge', jsonParser, authenticateSubscriber, function (req, res) {
+    const id = req.subscriber.id
+    request.post(`${pushdBaseUrl}/subscriber/${id}`)
+      .type('form') // url-encode body
+      .send({ badge: 0 })
+      .end(function (err, clearRes) {
+        if (err) return oops(err, res)
+
+        res.status(200).end()
+      })
   })
 
   app.post('/publisher', jsonParser, function (req, res) {
@@ -252,7 +298,10 @@ module.exports = function (opts) {
         if (err) return oops(err, res)
         if (!verified) return res.status(401).send('invalid signature')
 
-        publishers.put(regInfo.link, {}, function (err) {
+        publishers.put(regInfo.link, {
+          key: regInfo.key,
+          subscribers: {}
+        }, function (err) {
           if (err) return oops(err, res)
 
           unconfirmedPublishers.del(nonce, function (err) {
@@ -267,16 +316,27 @@ module.exports = function (opts) {
 
   app.use(defaultErrHandler)
 
-  return server.close.bind(server)
+  return server ? server.close.bind(server) : noop
 
-  function authenticate (req, res, next) {
-    const params = req.params
-    const subscriber = params.subscriber
-    const publisher = params.publisher
-    const sig = req.body && req.body.sig
-    // TODO: check sig
+  function authenticateSubscriber (req, res, next) {
+    const body = req.body || req.query
+    const subscriber = body.subscriber
 
-    next()
+    subscribers.get(subscriber, function (err, info) {
+      if (err) return res.status(404).end()
+
+      if (subscriber !== info.permalink) {
+        return res.status(401).send('impersonation attempt blocked')
+      }
+
+      try {
+        validate(body, info.identity)
+        req.subscriber = info
+        next()
+      } catch (err) {
+        return res.status(401).send('invalid signature')
+      }
+    })
   }
 
   function defaultErrHandler (err, req, res, next) {
