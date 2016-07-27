@@ -5,7 +5,7 @@ const jsonParser = require('body-parser').json()
 const request = require('superagent')
 const level = require('level')
 const subdown = require('subleveldown')
-const parallel = require('run-parallel')
+const async = require('async')
 const debug = require('debug')('tradle:push-server')
 const nkeyEC = require('nkey-ec')
 const tradle = require('@tradle/engine')
@@ -93,16 +93,25 @@ module.exports = function (opts) {
         // }
 
         const id = body.id
-        subscribers.put(identityInfo.permalink, {
-          id: id,
-          link: identityInfo.link,
-          permalink: identityInfo.permalink,
-          identity: identity
-        }, function (err) {
-          if (err) return oops(err, res)
+        const permalink = identityInfo.permalink
+        subscribers.get(permalink, function (err, saved) {
+          const deviceInfo = {
+            id: id
+          }
 
-          debug('registered: ' + identityInfo.link)
-          res.status(200).end()
+          subscribers.put(permalink, {
+            link: identityInfo.link,
+            permalink: permalink,
+            identity: identity,
+            devices: saved ? saved.devices.concat(deviceInfo) : [deviceInfo]
+          }, function (err) {
+            if (err) return oops(err, res)
+
+            // TODO: subscribe this device to whatever
+            // subscriptions the other devices have
+            debug('registered: ' + identityInfo.link)
+            res.status(200).end()
+          })
         })
       })
   })
@@ -113,14 +122,23 @@ module.exports = function (opts) {
       const body = req.body
       const publisher = body.publisher
       const subscriber = body.subscriber
-      const id = req.subscriber.id
-      const event = privateEventName(id, publisher)
-      request.post(`${pushdBaseUrl}/subscriber/${id}/subscriptions/${event}`)
-        .end(function (err, subscribeRes) {
-          if (err) return oops(err, res)
+      const devices = req.subscriber.devices
+      async.each(devices, function (device, done) {
+        const id = device.id
+        const event = privateEventName(id, publisher)
+        request.post(`${pushdBaseUrl}/subscriber/${id}/subscriptions/${event}`)
+          .end(function (err, subscribeRes) {
+            if (subscribeRes.status > 300) {
+              done(err || new Error(subscribeRes.text))
+            } else {
+              done()
+            }
+          })
+      }, function (err) {
+        if (err) return oops(err, res)
 
-          res.status(200).end()
-        })
+        res.status(200).end()
+      })
     })
   // })
 
@@ -185,7 +203,7 @@ module.exports = function (opts) {
       return res.status(400).send('expected number "seq"')
     }
 
-    parallel({
+    async.parallel({
       subscriber: taskCB => subscribers.get(subscriberLink, taskCB),
       publisher: taskCB => publishers.get(publisherLink, taskCB)
     }, function (err, result) {
@@ -194,43 +212,51 @@ module.exports = function (opts) {
       if (err) return res.status(404).end()
 
       const publisher = result.publisher
+      const subscriber = normalizeSubscriber(result.subscriber)
       const mySubscribers = result.publisher.subscribers
-      if (!mySubscribers[subscriberLink]) {
-        mySubscribers[subscriberLink] = -1
-      }
-
-      if (!(seq >= mySubscribers[subscriberLink])) {
-        return res.status(409).end()
-      }
-
       const key = nkeyEC.fromJSON(publisher.key)
       const data = sha256(seq + (nonce || ''))
       key.verify(data, sig, function (err, verified) {
         if (err) return oops(err, res)
         if (!verified) return res.status(401).send('invalid signature')
 
-        const id = result.subscriber.id
-        const event = privateEventName(id, publisherLink)
-        // const body = req.body
-        // body.contentAvailable = true
-        request.post(`${pushdBaseUrl}/event/${event}`)
-          .type('form') // send url-encoded
-          .send({
-            contentAvailable: true,
-            sound: '',
-            msg: ''
-          })
-          .end(function (err, subscribeRes) {
-            if (err) return oops(err, res)
+        async.each(subscriber.devices, function (device, done) {
+          const id = device.id
+          const event = privateEventName(id, publisherLink)
+          if (!mySubscribers[id]) {
+            mySubscribers[id] = -1
+          }
 
-            mySubscribers[subscriberLink]++
-            publishers.put(publisherLink, result.publisher, function (err) {
-              // nothing we can do if there's an error
-              if (err) debug('failed to update publisher counts', err)
+          if (!(seq >= mySubscribers[id])) {
+            // silent fail, not great
+            return done()
+          }
 
-              res.status(200).end()
+          // const body = req.body
+          // body.contentAvailable = true
+          request.post(`${pushdBaseUrl}/event/${event}`)
+            .type('form') // send url-encoded
+            .send({
+              contentAvailable: true,
+              sound: '',
+              msg: ''
             })
-          })
+            .end(function (err, subscribeRes) {
+              if (err) return oops(err, res)
+
+              mySubscribers[id] = seq
+              publishers.put(publisherLink, result.publisher, function (err) {
+                // nothing we can do if there's an error
+                if (err) debug('failed to update publisher counts', err)
+
+                done()
+              })
+            })
+        }, function (err) {
+          if (err) return oops(err, res)
+
+          res.status(200).end()
+        })
       })
     })
   })
@@ -376,4 +402,11 @@ function oops (err, res) {
 
 function sha256 (data) {
   return crypto.createHash('sha256').update(data).digest('base64')
+}
+
+function normalizeSubscriber (subscriber) {
+  if (subscriber.devices) return subscriber
+  else subscriber.devices = [{ id: subscriber.id }]
+
+  return subscriber
 }
