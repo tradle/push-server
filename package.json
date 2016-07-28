@@ -18,5 +18,8 @@
     "nkey-ec": "^1.0.0",
     "subleveldown": "^2.1.0",
     "superagent": "^2.1.0"
+  },
+  "devDependencies": {
+    "minimist": "^1.2.0"
   }
 }

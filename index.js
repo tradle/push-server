@@ -13,9 +13,7 @@ const createValidator = tradle.validator
 const protocol = tradle.protocol
 const constants = tradle.constants
 const PERMALINK = constants.PERMALINK
-// const protocol = require('@tradle/protocol')
 const DEFAULT_LANG = 'en'
-const DEFAULT_PUSHD_URL = 'http://127.0.0.1:24432'
 // pushd supports others, but limit for now
 const PROTOCOLS = ['apns', 'gcm']
 const noop = () => {}
@@ -27,7 +25,7 @@ module.exports = function (opts) {
   const subscribers = subdown(db, 'subscribers', dbOpts)
   const unconfirmedPublishers = subdown(db, 'waitingRoom', dbOpts)
   const publishers = subdown(db, 'publishers', dbOpts)
-  const pushdBaseUrl = opts.pushd || DEFAULT_PUSHD_URL
+  const pushdBaseUrl = `http://localhost:${opts.pushd}`
   const server = opts.router ? null : app.listen(opts.port)
   const defaultLang = opts.lang || DEFAULT_LANG
   const validator = createValidator()
@@ -192,6 +190,7 @@ module.exports = function (opts) {
   //   })
   // })
 
+  // TODO throttle per subscriber
   app.post('/notification', jsonParser, function (req, res) {
     const body = req.body
     const sig = body.sig
