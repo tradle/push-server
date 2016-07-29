@@ -12,5 +12,3 @@ RUN rm -f /root/.npmrc
 
 ADD . /opt/app
 RUN rm -f .npmrc
-WORKDIR /opt/app/push-server
-RUN npm install

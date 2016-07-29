@@ -1,5 +1,3 @@
-#!/bin/bash
-
 const path = require('path')
 const argv = require('minimist')(process.argv.slice(2), {
   alias: {
