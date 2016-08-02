@@ -277,6 +277,15 @@ module.exports = function (opts) {
     else return confirmPublisher(req, res)
   })
 
+  app.get('/status', function (req, res) {
+    request.get(`${pushdBaseUrl}/status`)
+      .end(function (err, statusRes) {
+        if (err) return res.status(404).send('server unreachable')
+
+        res.status(statusRes.status).end(statusRes.text)
+      })
+  })
+
   function registerPublisher (req, res) {
     const body = req.body
     const identity = body.identity
