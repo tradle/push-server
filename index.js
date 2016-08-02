@@ -25,7 +25,7 @@ module.exports = function (opts) {
   const subscribers = subdown(db, 'subscribers', dbOpts)
   const unconfirmedPublishers = subdown(db, 'waitingRoom', dbOpts)
   const publishers = subdown(db, 'publishers', dbOpts)
-  const pushdBaseUrl = `http://localhost:${opts.pushd}`
+  const pushdBaseUrl = opts.pushd.replace(/[\/]+$/, '') // trim trailing slash
   const server = opts.router ? null : app.listen(opts.port)
   const defaultLang = opts.lang || DEFAULT_LANG
   const validator = createValidator()
@@ -57,7 +57,7 @@ module.exports = function (opts) {
 
     const identityInfo = { object: identity }
     tradle.utils.addLinks(identityInfo)
-    request.post(pushdBaseUrl + '/subscribers')
+    request.post(`${pushdBaseUrl}/subscribers`)
       .type('form') // send url-encoded
       .send({
         proto: proto,

@@ -12,18 +12,17 @@ const argv = require('minimist')(process.argv.slice(2), {
   }
 })
 
-if (isNaN(argv.pushd)) {
-  throw new Error('missing "pushd" port')
+if (!argv.pushd) {
+  throw new Error('missing "pushd" url')
 }
 
 const createServer = require('./')
 const port = Number(argv.port)
-const pushdPort = (argv.pushd) // port
 createServer({
   db: path.resolve(argv.db),
-  pushd: Number(argv.pushd),
+  pushd: argv.pushd,
   port: Number(argv.port),
   lang: argv.lang
 })
 
-console.log(`running on port ${port}, connecting to pushd on port ${pushdPort}`)
+console.log(`running on port ${port}, connecting to pushd at ${argv.pushd}`)
