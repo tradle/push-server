@@ -1,14 +1,17 @@
-FROM mhart/alpine-node:4.2.4
+FROM mhart/alpine-node:6.5.0
 
-RUN apk add --update git make gcc g++ gmp python bash
 RUN mkdir -p /opt/app
 WORKDIR /opt/app
-
 ADD package.json npm-shrinkwrap.json /opt/app/
 RUN npm config set registry https://registry.npmjs.org/
-ADD .npmrc /root/.npmrc
-RUN cd /opt/app && npm install
-RUN rm -f /root/.npmrc
+
+RUN apk add --no-cache --virtual build-dependencies git make gcc g++ gmp python bash && \
+  rm -rf /var/cache/apk/* && \
+  npm install --production && \
+  npm cache clean && \
+  apk del build-dependencies
+
+# use changes to package.json to force Docker not to use the cache
+# when we change our application's nodejs dependencies:
 
 ADD . /opt/app
-RUN rm -f .npmrc
