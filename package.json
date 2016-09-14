@@ -9,13 +9,13 @@
   "author": "Mark Vayngrib <mark@tradle.io> (http://github.com/mvayngrib)",
   "license": "MIT",
   "dependencies": {
-    "@tradle/engine": "^2.1.0",
+    "@tradle/engine": "^3.0.1",
     "async": "^2.0.1",
     "body-parser": "^1.15.2",
     "debug": "^2.2.0",
     "express": "^4.14.0",
     "level": "^1.4.0",
-    "nkey-ec": "^1.0.0",
+    "nkey-ecdsa": "^1.0.1",
     "subleveldown": "^2.1.0",
     "superagent": "^2.1.0"
   },

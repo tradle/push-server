@@ -7,7 +7,7 @@ const level = require('level')
 const subdown = require('subleveldown')
 const async = require('async')
 const debug = require('debug')('tradle:push-server')
-const nkeyEC = require('nkey-ec')
+const nkeyEC = require('nkey-ecdsa')
 const tradle = require('@tradle/engine')
 const createValidator = tradle.validator
 const protocol = tradle.protocol
@@ -93,10 +93,12 @@ module.exports = function (opts) {
         const id = body.id
         const permalink = identityInfo.permalink
         subscribers.get(permalink, function (err, saved) {
-          const deviceInfo = {
-            id: id
+          if (saved) {
+            const have = saved.devices.some(d => d.id === id)
+            if (have) return res.status(200).end()
           }
 
+          const deviceInfo = { id }
           subscribers.put(permalink, {
             link: identityInfo.link,
             permalink: permalink,
