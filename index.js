@@ -74,9 +74,11 @@ module.exports = function (opts) {
           return res.status(400).send('Invalid token or protocol')
         }
 
-        if (pushdRes.status === 200) {
-          return res.status(200).end()
-        }
+        // don't return here, because if the app on the device is reset
+        // the permalink will change but the token will stay the same
+        // if (pushdRes.status === 200) {
+        //   return res.status(200).end()
+        // }
 
         const body = pushdRes.body
         // pushd readme example response:
