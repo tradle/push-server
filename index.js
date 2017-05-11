@@ -92,26 +92,29 @@ module.exports = function (opts) {
         //     "id":"J8lHY4X1XkU"
         // }
 
-        const id = body.id
-        const permalink = identityInfo.permalink
+        const { id } = body
+        const { link, permalink } = identityInfo
         subscribers.get(permalink, function (err, saved) {
           if (saved) {
             const have = saved.devices.some(d => d.id === id)
-            if (have) return res.status(200).end()
+            if (have) {
+              debug(`subscriber "${link}"'s device is already registered`)
+              return res.status(200).end()
+            }
           }
 
           const deviceInfo = { id }
           subscribers.put(permalink, {
-            link: identityInfo.link,
-            permalink: permalink,
-            identity: identity,
+            link,
+            permalink,
+            identity,
             devices: saved ? saved.devices.concat(deviceInfo) : [deviceInfo]
           }, function (err) {
             if (err) return oops(err, res)
 
             // TODO: subscribe this device to whatever
             // subscriptions the other devices have
-            debug('registered: ' + identityInfo.link)
+            debug('new device for subscriber: ' + identityInfo.link)
             res.status(200).end()
           })
         })
@@ -121,18 +124,20 @@ module.exports = function (opts) {
   // create/delete subscriptions
   // ;['post', 'delete'].forEach(method => {
     app.post('/subscription', jsonParser, authenticateSubscriber, function (req, res) {
-      const body = req.body
-      const publisher = body.publisher
-      const subscriber = body.subscriber
-      const devices = req.subscriber.devices
+      const { body } = req
+      const { publisher, subscriber } = body
+      const { devices } = req.subscriber
       async.each(devices, function (device, done) {
-        const id = device.id
+        const { id } = device
         const event = privateEventName(id, publisher)
         request.post(`${pushdBaseUrl}/subscriber/${id}/subscriptions/${event}`)
           .end(function (err, subscribeRes) {
-            if (subscribeRes.status > 300) {
-              done(err || new Error(subscribeRes.text))
+            const { status, text } = subscribeRes
+            if (status > 300) {
+              debug(`failed to add subscription: ${text}`)
+              done(err || new Error(text))
             } else {
+              debug(`added subscription for subscriber "${subscriber}" to publisher "${publisher}"`)
               done()
             }
           })
@@ -203,6 +208,7 @@ module.exports = function (opts) {
     const seq = Number(body.seq)
     const nonce = body.nonce // optional nonce
     if (isNaN(seq)) {
+      debug(`expected number "seq", got: ${body.seq}`)
       return res.status(400).send('expected number "seq"')
     }
 
@@ -265,15 +271,18 @@ module.exports = function (opts) {
   })
 
   app.post('/clearbadge', jsonParser, authenticateSubscriber, function (req, res) {
-    const id = req.subscriber.id
-    request.post(`${pushdBaseUrl}/subscriber/${id}`)
-      .type('form') // url-encode body
-      .send({ badge: 0 })
-      .end(function (err, clearRes) {
-        if (err) return oops(err, res)
+    const { devices } = req.subscriber
+    devices.forEach(device => {
+      const { id } = device
+      request.post(`${pushdBaseUrl}/subscriber/${id}`)
+        .type('form') // url-encode body
+        .send({ badge: 0 })
+        .end(function (err, clearRes) {
+          if (err) return oops(err, res)
 
-        res.status(200).end()
-      })
+          res.status(200).end()
+        })
+    })
   })
 
   app.post('/publisher', jsonParser, function (req, res) {
