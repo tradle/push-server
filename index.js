@@ -1,5 +1,6 @@
 
 const crypto = require('crypto')
+const cors = require('cors')
 const express = require('express')
 const jsonParser = require('body-parser').json()
 const request = require('superagent')
@@ -30,6 +31,7 @@ module.exports = function (opts) {
   const defaultLang = opts.lang || DEFAULT_LANG
   const validator = createValidator()
 
+  app.use(cors())
   app.post('/subscriber', jsonParser, function register (req, res) {
     const body = req.body
     const identity = body.identity
